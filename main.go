@@ -1,122 +1,28 @@
 package main
 
 import (
-	"encoding/gob"
-	"encoding/json"
-	"fmt"
+	termutil "../termboxutil"
 	term "github.com/nsf/termbox-go"
-	"io/ioutil"
-	"net/http"
-	"net/url"
 	"os"
 	"os/user"
-	"strings"
 )
 
 var selected int // index of selected title
-// TODO rename this
 var cache string // full cache $HOME/cacheBase
 
 const (
 	cacheBase = "/.tinbox/"
-	omdbUrl   = "http://www.omdbapi.com/?t=%s&plot=full"
+	omdbUrl   = "http://www.omdbapi.com/?%s=%s&plot=%s"
 )
 
 /*
 holds the response from omdbapi */
 type Movie struct {
-	Title, Year, Genre, Director, Actors, Plot string
+	Title, Year, Genre, Director, Actors, Plot, ImdbID string
 }
 
-/*
-TODO make filename parsing more flexible */
-func fileFmt(name string) string {
-	idx := strings.Index(name, " (")
-	name = name[:idx]
-
-	filename := cache + name
-
-	cacheFile, err := os.OpenFile(filename, os.O_RDONLY, 0660)
-
-	if os.IsNotExist(err) {
-		resp, err := http.Get(fmt.Sprintf(omdbUrl, url.QueryEscape(name)))
-		if err != nil {
-			return name
-		}
-
-		data, readerr := ioutil.ReadAll(resp.Body)
-		if readerr != nil {
-			panic(readerr)
-		}
-		resp.Body.Close()
-
-		result := Movie{}
-		err = json.Unmarshal(data, &result)
-
-		if err != nil {
-			panic(err)
-		}
-
-		outfile, ioerr := os.Create(filename)
-		if ioerr != nil {
-			panic(ioerr)
-		}
-
-		genc := gob.NewEncoder(outfile)
-		genc.Encode(result)
-		outfile.Close()
-
-		cacheFile, err = os.OpenFile(filename, os.O_RDONLY, 0660)
-
-		if err != nil {
-			panic(err)
-		}
-	}
-
-	gdec := gob.NewDecoder(cacheFile)
-	defer cacheFile.Close()
-
-	movie := Movie{}
-	gdec.Decode(&movie)
-
-	return movie.Title
-}
-
-func draw(media []os.FileInfo) {
-
-	xpos := 0
-	ypos := 0
-
-	_, maxy := term.Size()
-	if selected < 0 {
-		selected = 0
-		return
-	} else if selected == maxy || selected == len(media) {
-		selected = selected - 1 // reset selected (TODO dont do this)
-		return
-	}
-
-	for i, file := range media {
-
-		if file.IsDir() {
-			continue
-		} else if ypos == maxy {
-			break // break since we are at the end of the display
-		}
-
-		for _, ch := range fileFmt(file.Name()) {
-			if i == selected {
-				term.SetCell(xpos, ypos, rune(ch), term.ColorGreen, term.ColorBlack)
-			} else {
-				term.SetCell(xpos, ypos, rune(ch), term.ColorWhite, term.ColorBlack)
-			}
-			xpos += 1
-		}
-
-		ypos += 1
-		xpos = 0
-	}
-
+type Search struct {
+	Search []Movie
 }
 
 func main() {
@@ -137,7 +43,20 @@ func main() {
 	defer term.Close()
 	term.SetCursor(-1, -1)
 
-	draw(media)
+	filenames := make([]string, len(media))
+
+	for i, file := range media {
+		filenames[i] = file.Name()
+	}
+
+	screen := termutil.NewScreen(term.ColorWhite, term.ColorBlack)
+
+	err = screen.Draw(filenames)
+	if err != nil {
+		panic(err)
+	}
+
+	selected = 0
 
 	for {
 		// redraw any changes
@@ -148,23 +67,46 @@ func main() {
 
 		// handle resize
 		if e.Type == term.EventResize {
-			term.Clear(term.ColorWhite, term.ColorBlack)
-			draw(media)
+			err = screen.Redraw()
+			if err != nil {
+				panic(err)
+			}
 			continue
 		}
 
 		// handle error
 		if e.Type == term.EventError {
+			panic(e.Err)
 			continue
 		}
 
 		// handle keys
 		if e.Key == term.KeyArrowUp || e.Ch == 'k' {
-			selected -= 1
+
+			if selected-1 >= 0 {
+				selected -= 1
+			} else {
+				continue
+			}
+
+			screen.UnmarkRow(selected+1)
+			screen.MarkRow(selected, term.ColorGreen, term.ColorBlack)
 		} else if e.Key == term.KeyArrowDown || e.Ch == 'j' {
-			selected += 1
+
+			if selected+1 < len(screen.Rows) {
+				selected += 1
+			} else {
+				continue
+			}
+
+			screen.UnmarkRow(selected-1)
+			screen.MarkRow(selected, term.ColorGreen, term.ColorBlack)
 		}
 
-		draw(media)
+		err = screen.Redraw()
+
+		if err != nil {
+			panic(err)
+		}
 	}
 }
