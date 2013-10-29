@@ -49,12 +49,13 @@ func main() {
 		filenames[i] = file.Name()
 	}
 
-	screen := termutil.NewScreen(term.ColorWhite, term.ColorBlack)
+	screen := termutil.NewScreen(term.ColorWhite, term.ColorDefault, term.ColorGreen, term.ColorBlack)
 
 	err = screen.Draw(filenames)
 	if err != nil {
 		panic(err)
 	}
+	screen.Redraw()
 
 	selected = 0
 
@@ -82,25 +83,9 @@ func main() {
 
 		// handle keys
 		if e.Key == term.KeyArrowUp || e.Ch == 'k' {
-
-			if selected-1 >= 0 {
-				selected -= 1
-			} else {
-				continue
-			}
-
-			screen.UnmarkRow(selected+1)
-			screen.MarkRow(selected, term.ColorGreen, term.ColorBlack)
+			screen.PrevRow()
 		} else if e.Key == term.KeyArrowDown || e.Ch == 'j' {
-
-			if selected+1 < len(screen.Rows) {
-				selected += 1
-			} else {
-				continue
-			}
-
-			screen.UnmarkRow(selected-1)
-			screen.MarkRow(selected, term.ColorGreen, term.ColorBlack)
+			screen.NextRow()
 		}
 
 		err = screen.Redraw()
