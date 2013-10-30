@@ -2,9 +2,15 @@ package main
 
 import (
 	termutil "../termboxutil"
+	"encoding/json"
+	"fmt"
 	term "github.com/nsf/termbox-go"
+	"io/ioutil"
+	"net/http"
+	"net/url"
 	"os"
 	"os/user"
+	"strings"
 )
 
 var selected int // index of selected title
@@ -21,8 +27,30 @@ type Movie struct {
 	Title, Year, Genre, Director, Actors, Plot, ImdbID string
 }
 
-type Search struct {
+type SearchResult struct {
 	Search []Movie
+}
+
+func omdbSearch(title string) SearchResult {
+	resp, err := http.Get(fmt.Sprintf(omdbUrl, "s", url.QueryEscape(title), "short"))
+	if err != nil {
+		panic(err)
+	}
+
+	data, readerr := ioutil.ReadAll(resp.Body)
+	if readerr != nil {
+		panic(readerr)
+	}
+	resp.Body.Close()
+
+	var result SearchResult
+	err = json.Unmarshal(data, &result)
+
+	if err != nil {
+		panic(err)
+	}
+
+	return result
 }
 
 func main() {
@@ -50,48 +78,106 @@ func main() {
 	}
 
 	screen := termutil.NewScreen(term.ColorWhite, term.ColorDefault, term.ColorGreen, term.ColorBlack)
+	screen.Scrollable(true)
+
+	searchScreen := termutil.NewScreen(term.ColorWhite, term.ColorDefault, term.ColorGreen, term.ColorBlack)
+	searchScreen.Scrollable(true)
 
 	err = screen.Draw(filenames)
 	if err != nil {
 		panic(err)
 	}
-	screen.Redraw()
 
 	selected = 0
 
 	for {
-		// redraw any changes
-		term.Flush()
+		for {
 
-		// wait for new events
-		e := term.PollEvent()
+			// redraw any changes
+			term.Flush()
 
-		// handle resize
-		if e.Type == term.EventResize {
+			// wait for new events
+			e := term.PollEvent()
+
+			// handle resize
+			if e.Type == term.EventResize {
+				err = screen.Redraw()
+				if err != nil {
+					panic(err)
+				}
+				continue
+			}
+
+			// handle error
+			if e.Type == term.EventError {
+				panic(e.Err)
+				continue
+			}
+
+			// handle keys
+			if e.Key == term.KeyArrowUp || e.Ch == 'k' {
+				screen.PrevRow()
+			} else if e.Key == term.KeyArrowDown || e.Ch == 'j' {
+				screen.NextRow()
+			} else if e.Ch == 'i' {
+				break
+			}
+
 			err = screen.Redraw()
+
 			if err != nil {
 				panic(err)
 			}
-			continue
 		}
 
-		// handle error
-		if e.Type == term.EventError {
-			panic(e.Err)
-			continue
+		search := screen.CurrentRow().Text
+		idx := strings.LastIndex(search, " (")
+
+		search = search[:idx]
+
+		searchResult := omdbSearch(search)
+
+		titles := make([]string, len(searchResult.Search))
+
+		for i, movie := range searchResult.Search {
+			titles[i] = movie.Title
 		}
 
-		// handle keys
-		if e.Key == term.KeyArrowUp || e.Ch == 'k' {
-			screen.PrevRow()
-		} else if e.Key == term.KeyArrowDown || e.Ch == 'j' {
-			screen.NextRow()
-		}
+		searchScreen.Draw(titles)
 
-		err = screen.Redraw()
+		// loop for searches
+		for {
 
-		if err != nil {
-			panic(err)
+			term.Flush()
+
+			e := term.PollEvent()
+
+			// handle resize
+			if e.Type == term.EventResize {
+				err = searchScreen.Redraw()
+				if err != nil {
+					panic(err)
+				}
+				continue
+			}
+
+			// handle error
+			if e.Type == term.EventError {
+				panic(e.Err)
+			}
+
+			// handle keys
+			if e.Key == term.KeyArrowUp || e.Ch == 'k' {
+				searchScreen.PrevRow()
+			} else if e.Key == term.KeyArrowDown || e.Ch == 'j' {
+				searchScreen.NextRow()
+			}
+
+			err = searchScreen.Redraw()
+
+			if err != nil {
+				panic(err)
+			}
 		}
 	}
 }
