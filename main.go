@@ -1,10 +1,10 @@
 package main
 
 import (
-	termutil "../termboxutil"
+	termboxutil "../termboxutil"
 	"encoding/json"
 	"fmt"
-	term "github.com/nsf/termbox-go"
+	termbox "github.com/nsf/termbox-go"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -13,7 +13,6 @@ import (
 	"strings"
 )
 
-var selected int // index of selected title
 var cache string // full cache $HOME/cacheBase
 
 const (
@@ -32,6 +31,8 @@ type SearchResult struct {
 }
 
 func omdbSearch(title string) SearchResult {
+	idx := strings.Index(title, " (")
+	title = title[:idx]
 	resp, err := http.Get(fmt.Sprintf(omdbUrl, "s", url.QueryEscape(title), "short"))
 	if err != nil {
 		panic(err)
@@ -65,11 +66,11 @@ func main() {
 	u, _ := user.Current()
 	cache = u.HomeDir + cacheBase
 
-	if err := term.Init(); err != nil {
+	if err := termbox.Init(); err != nil {
 		panic(err)
 	}
-	defer term.Close()
-	term.SetCursor(-1, -1)
+	defer termbox.Close()
+	termbox.SetCursor(-1, -1)
 
 	filenames := make([]string, len(media))
 
@@ -77,107 +78,59 @@ func main() {
 		filenames[i] = file.Name()
 	}
 
-	screen := termutil.NewScreen(term.ColorWhite, term.ColorDefault, term.ColorGreen, term.ColorBlack)
-	screen.Scrollable(true)
+	screen := termboxutil.Screen{}
 
-	searchScreen := termutil.NewScreen(term.ColorWhite, term.ColorDefault, term.ColorGreen, term.ColorBlack)
-	searchScreen.Scrollable(true)
+	mainWindow := screen.NewWindow(termbox.ColorWhite, termbox.ColorDefault, termbox.ColorGreen, termbox.ColorBlack)
+	mainWindow.Scrollable(true)
 
-	err = screen.Draw(filenames)
+	searchWindow := screen.NewWindow(termbox.ColorWhite, termbox.ColorDefault, termbox.ColorGreen, termbox.ColorBlack)
+	searchWindow.Scrollable(true)
+
+	err = mainWindow.Draw(filenames)
+	screen.Focus(&mainWindow)
+
 	if err != nil {
 		panic(err)
 	}
+	termbox.Flush()
 
-	selected = 0
+	mainWindow.CatchEvent = func(event termbox.Event) {
+		if event.Ch == 'j' || event.Key == termbox.KeyArrowDown {
+			mainWindow.NextRow()
+		} else if event.Ch == 'k' || event.Key == termbox.KeyArrowUp {
+			mainWindow.PrevRow()
+		} else if event.Ch == 'i' {
+			searchResult := omdbSearch(mainWindow.CurrentRow().Text)
+			searchData := make([]string, len(searchResult.Search))
 
-	for {
-		for {
-
-			// redraw any changes
-			term.Flush()
-
-			// wait for new events
-			e := term.PollEvent()
-
-			// handle resize
-			if e.Type == term.EventResize {
-				err = screen.Redraw()
-				if err != nil {
-					panic(err)
-				}
-				continue
+			for i, movieResult := range searchResult.Search {
+				searchData[i] = movieResult.Title
 			}
-
-			// handle error
-			if e.Type == term.EventError {
-				panic(e.Err)
-				continue
-			}
-
-			// handle keys
-			if e.Key == term.KeyArrowUp || e.Ch == 'k' {
-				screen.PrevRow()
-			} else if e.Key == term.KeyArrowDown || e.Ch == 'j' {
-				screen.NextRow()
-			} else if e.Ch == 'i' {
-				break
-			}
-
-			err = screen.Redraw()
-
-			if err != nil {
-				panic(err)
-			}
+			searchWindow.Draw(searchData)
+			screen.Focus(&searchWindow)
+			termbox.Flush()
+			return
 		}
 
-		search := screen.CurrentRow().Text
-		idx := strings.LastIndex(search, " (")
-
-		search = search[:idx]
-
-		searchResult := omdbSearch(search)
-
-		titles := make([]string, len(searchResult.Search))
-
-		for i, movie := range searchResult.Search {
-			titles[i] = movie.Title
-		}
-
-		searchScreen.Draw(titles)
-
-		// loop for searches
-		for {
-
-			term.Flush()
-
-			e := term.PollEvent()
-
-			// handle resize
-			if e.Type == term.EventResize {
-				err = searchScreen.Redraw()
-				if err != nil {
-					panic(err)
-				}
-				continue
-			}
-
-			// handle error
-			if e.Type == term.EventError {
-				panic(e.Err)
-			}
-
-			// handle keys
-			if e.Key == term.KeyArrowUp || e.Ch == 'k' {
-				searchScreen.PrevRow()
-			} else if e.Key == term.KeyArrowDown || e.Ch == 'j' {
-				searchScreen.NextRow()
-			}
-
-			err = searchScreen.Redraw()
-
-			if err != nil {
-				panic(err)
-			}
-		}
+		mainWindow.Redraw()
+		termbox.Flush()
 	}
+
+	searchWindow.CatchEvent = func(event termbox.Event) {
+		if event.Ch == 'j' || event.Key == termbox.KeyArrowDown {
+			searchWindow.NextRow()
+		} else if event.Ch == 'k' || event.Key == termbox.KeyArrowUp {
+			searchWindow.PrevRow()
+		} else if event.Ch == 'q' || event.Key == termbox.KeyEsc {
+			screen.Focus(&mainWindow)
+			mainWindow.Redraw()
+			termbox.Flush()
+			return
+		}
+
+		searchWindow.Redraw()
+		termbox.Flush()
+	}
+
+	screen.Loop()
 }
