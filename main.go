@@ -2,7 +2,9 @@ package main
 
 import (
 	termboxutil "../termboxutil"
+	"encoding/gob"
 	"encoding/json"
+	"errors"
 	"fmt"
 	termbox "github.com/nsf/termbox-go"
 	"io/ioutil"
@@ -10,14 +12,15 @@ import (
 	"net/url"
 	"os"
 	"os/user"
+	"regexp"
 	"strings"
 )
 
-var cache string // full cache $HOME/cacheBase
+var titleRegex *regexp.Regexp // the regex used to cleanup filenames
+var cache string              // cache directory $HOME/.movietin
 
 const (
-	cacheBase = "/.tinbox/"
-	omdbUrl   = "http://www.omdbapi.com/?%s=%s&plot=%s"
+	omdbUrl = "http://www.omdbapi.com/?%s=%s&plot=full"
 )
 
 /*
@@ -30,10 +33,38 @@ type SearchResult struct {
 	Search []Movie
 }
 
-func omdbSearch(title string) SearchResult {
-	idx := strings.Index(title, " (")
-	title = title[:idx]
-	resp, err := http.Get(fmt.Sprintf(omdbUrl, "s", url.QueryEscape(title), "short"))
+func cacheLookup(fname string) (movie Movie, found error) {
+	file, openerr := os.OpenFile(strings.Trim(cache + fname, " "), os.O_RDONLY, 0660)
+	if openerr != nil {
+		return movie, errors.New("No file in cache " + cache + fname)
+	}
+	defer file.Close()
+
+	decoder := gob.NewDecoder(file)
+	if err := decoder.Decode(&movie); err != nil {
+		return movie, errors.New("Failed decoding gob in cache")
+	}
+
+	return
+}
+
+func cacheSave(fname string, movie Movie) error {
+	file, openerr := os.OpenFile(strings.Trim(cache + fname, " "), os.O_TRUNC|os.O_WRONLY|os.O_CREATE, 0660)
+	if openerr != nil {
+		return errors.New("Couldnt open cache for saving")
+	}
+	defer file.Close()
+
+	encoder := gob.NewEncoder(file)
+	if err := encoder.Encode(movie); err != nil {
+		return errors.New("Couldnt save cache")
+	}
+
+	return nil
+}
+
+func omdbLookup(url string) []byte {
+	resp, err := http.Get(url)
 	if err != nil {
 		panic(err)
 	}
@@ -44,14 +75,7 @@ func omdbSearch(title string) SearchResult {
 	}
 	resp.Body.Close()
 
-	var result SearchResult
-	err = json.Unmarshal(data, &result)
-
-	if err != nil {
-		panic(err)
-	}
-
-	return result
+	return data
 }
 
 func main() {
@@ -64,7 +88,11 @@ func main() {
 	}
 
 	u, _ := user.Current()
-	cache = u.HomeDir + cacheBase
+	cache = u.HomeDir + "/.movietin/"
+
+	// TODO make this cleaner and replace periods etc
+	// regex to cleanup filenames from extensions and misc data
+	titleRegex, _ = regexp.Compile("[\\w\\d\\s]+")
 
 	if err := termbox.Init(); err != nil {
 		panic(err)
@@ -75,15 +103,31 @@ func main() {
 	filenames := make([]string, len(media))
 
 	for i, file := range media {
-		filenames[i] = file.Name()
+		prettyName := titleRegex.FindString(file.Name())
+		cachedImdb, cacherr := cacheLookup(prettyName)
+
+		if cacherr != nil {
+			filenames[i] = prettyName
+		} else {
+			filenames[i] = cachedImdb.Title + "\t" + cachedImdb.Year
+		}
+
 	}
 
 	screen := termboxutil.Screen{}
 
-	mainWindow := screen.NewWindow(termbox.ColorWhite, termbox.ColorDefault, termbox.ColorGreen, termbox.ColorBlack)
+	mainWindow := screen.NewWindow(
+		termbox.ColorWhite,
+		termbox.ColorDefault,
+		termbox.ColorGreen,
+		termbox.ColorBlack)
 	mainWindow.Scrollable(true)
 
-	searchWindow := screen.NewWindow(termbox.ColorWhite, termbox.ColorDefault, termbox.ColorGreen, termbox.ColorBlack)
+	searchWindow := screen.NewWindow(
+		termbox.ColorWhite,
+		termbox.ColorDefault,
+		termbox.ColorGreen,
+		termbox.ColorBlack)
 	searchWindow.Scrollable(true)
 
 	err = mainWindow.Draw(filenames)
@@ -94,19 +138,35 @@ func main() {
 	}
 	termbox.Flush()
 
+	var searchResult []Movie
 	mainWindow.CatchEvent = func(event termbox.Event) {
 		if event.Ch == 'j' || event.Key == termbox.KeyArrowDown {
 			mainWindow.NextRow()
 		} else if event.Ch == 'k' || event.Key == termbox.KeyArrowUp {
 			mainWindow.PrevRow()
-		} else if event.Ch == 'i' {
-			searchResult := omdbSearch(mainWindow.CurrentRow().Text)
-			searchData := make([]string, len(searchResult.Search))
+		} else if event.Key == termbox.KeyEnter {
 
-			for i, movieResult := range searchResult.Search {
-				searchData[i] = movieResult.Title
+			// do a search for titleRegex match of the filename
+			curRow, _ := mainWindow.CurrentRow()
+			searchData := omdbLookup(fmt.Sprintf(
+				omdbUrl,
+				"s",
+				url.QueryEscape(titleRegex.FindString(curRow.Text))))
+
+			var sr SearchResult
+			err = json.Unmarshal(searchData, &sr)
+			if err != nil {
+				panic(err)
 			}
-			searchWindow.Draw(searchData)
+			searchResult = sr.Search
+
+			titles := make([]string, len(searchResult))
+
+			for i, movie := range searchResult {
+				titles[i] = movie.Title
+			}
+
+			searchWindow.Draw(titles)
 			screen.Focus(&searchWindow)
 			termbox.Flush()
 			return
@@ -121,6 +181,29 @@ func main() {
 			searchWindow.NextRow()
 		} else if event.Ch == 'k' || event.Key == termbox.KeyArrowUp {
 			searchWindow.PrevRow()
+		} else if event.Key == termbox.KeyEnter {
+			currentRow, index := searchWindow.CurrentRow()
+
+			// do movie lookup by id
+			lookupData := omdbLookup(fmt.Sprintf(
+				omdbUrl,
+				"i",
+				searchResult[index].ImdbID))
+
+			var movie Movie
+			err = json.Unmarshal(lookupData, &movie)
+			if err != nil {
+				panic(err)
+			}
+
+			err = cacheSave(titleRegex.FindString(currentRow.Text), movie)
+			if err != nil {
+				panic(err)
+			}
+			screen.Focus(&mainWindow)
+			mainWindow.Redraw()
+			termbox.Flush()
+			return
 		} else if event.Ch == 'q' || event.Key == termbox.KeyEsc {
 			screen.Focus(&mainWindow)
 			mainWindow.Redraw()
